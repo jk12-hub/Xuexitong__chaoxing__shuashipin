@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Chaoxing Course QA",
+  "version": "0.11.1",
+  "description": "Visible, user-started QA automation for authorized Chaoxing test courses.",
+  "permissions": ["storage", "notifications", "alarms"],
+  "host_permissions": [
+    "https://*.chaoxing.com/*",
+    "http://*.chaoxing.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.chaoxing.com/*",
+        "http://*.chaoxing.com/*"
+      ],
+      "js": ["qa-core.js", "content.js"],
+      "css": ["content.css"],
+      "all_frames": true,
+      "match_origin_as_fallback": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Chaoxing Course QA"
+  }
+}
