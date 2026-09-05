@@ -1,0 +1,8 @@
+{
+  "name": "chaoxing-course-qa",
+  "version": "0.11.1",
+  "private": true,
+  "scripts": {
+    "test": "node tests/run-tests.cjs && node --check background.js && node --check content.js && node --check qa-core.js"
+  }
+}

@@ -1,0 +1,79 @@
+#chaoxing-qa-panel {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2147483647;
+  width: 260px;
+  box-sizing: border-box;
+  padding: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.97);
+  color: #0f172a;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.22);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#chaoxing-qa-panel .chaoxing-qa-title {
+  margin-bottom: 8px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+#chaoxing-qa-panel .chaoxing-qa-status {
+  min-height: 38px;
+  margin-bottom: 9px;
+  padding: 8px;
+  border-radius: 7px;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+#chaoxing-qa-panel .chaoxing-qa-status[data-level="warning"] {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+#chaoxing-qa-panel .chaoxing-qa-status[data-level="error"] {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+#chaoxing-qa-panel .chaoxing-qa-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+#chaoxing-qa-panel .chaoxing-qa-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+#chaoxing-qa-panel button {
+  flex: 1;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+}
+
+#chaoxing-qa-panel button[data-qa-stop] {
+  background: #475569;
+}
+
+#chaoxing-qa-panel button:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+#chaoxing-qa-panel .chaoxing-qa-note {
+  color: #64748b;
+  font-size: 11px;
+}
