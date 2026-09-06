@@ -22,6 +22,9 @@
   let lastPlayControlClickAt = 0;
   let firstPlayControlClickAt = 0;
   let tickBusy = false;
+  let credentials = { account: "", password: "" };
+  let credentialsLoaded = false;
+  let loginAttempted = false;
 
   const DIALOG_SELECTORS = [
     "[role='dialog']",
@@ -60,6 +63,16 @@
       document.mozFullScreenElement ||
       document.msFullscreenElement
     );
+  }
+
+  function pageWasReloaded() {
+    try {
+      const navigation = performance.getEntriesByType("navigation")[0];
+      if (navigation) return navigation.type === "reload";
+      return Boolean(performance.navigation && performance.navigation.type === 1);
+    } catch (_error) {
+      return false;
+    }
   }
 
   function reportPlaybackError(reason) {
@@ -111,6 +124,74 @@
     lastStatus = normalized;
     updatePanelStatus(normalized, level);
     send("log", { level, message: normalized });
+  }
+
+  function setInputValue(input, value) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (setter) setter.call(input, value);
+    else input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function findLoginSafetyGate() {
+    const selectors = [
+      "input[placeholder*='验证码']",
+      "input[name*='captcha' i]",
+      "input[id*='captcha' i]",
+      "[class*='captcha' i]",
+      "[id*='captcha' i]",
+      "[class*='verify' i]",
+      "[id*='verify' i]"
+    ];
+    const texts = Array.from(document.querySelectorAll(selectors.join(",")))
+      .filter(isVisible)
+      .map((element) => element.innerText || element.textContent || element.getAttribute("placeholder") || "");
+    return core.blockedReasonFromTexts(texts) || findSafetyGate();
+  }
+
+  function findLoginButton(accountInput, passwordInput) {
+    const root = passwordInput.form || accountInput.form || document;
+    const candidates = Array.from(root.querySelectorAll(
+      "button, input[type='submit'], input[type='button'], [role='button'], a, [onclick]"
+    )).filter((element) => {
+      if (!isVisible(element) || element.closest("#chaoxing-qa-panel")) return false;
+      if (element.disabled || element.getAttribute("aria-disabled") === "true") return false;
+      const label = core.normalizeText(
+        element.value || element.innerText || element.textContent || element.getAttribute("aria-label") || ""
+      );
+      const compactLabel = label.replace(/\s+/g, "");
+      return compactLabel === "登录" || compactLabel === "立即登录";
+    });
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  function autofillLoginIfNeeded() {
+    if (!isTopFrame || !credentialsLoaded || loginAttempted) return;
+    if (!credentials.account || !credentials.password) return;
+    if (!core.normalizeText(document.title).includes("用户登录")) return;
+    const accountInput = document.querySelector("input#phone[maxlength='30']");
+    const passwordInput = document.querySelector("input#pwd[type='password'][maxlength='20']");
+    if (!accountInput || !passwordInput || !isVisible(accountInput) || !isVisible(passwordInput)) return;
+
+    const gate = findLoginSafetyGate();
+    if (gate) {
+      setStatus(`检测到${gate}，请人工完成后登录`, "warning");
+      return;
+    }
+
+    if (!accountInput.value) setInputValue(accountInput, credentials.account);
+    if (!passwordInput.value) setInputValue(passwordInput, credentials.password);
+    if (accountInput.value && passwordInput.value) {
+      const loginButton = findLoginButton(accountInput, passwordInput);
+      if (!loginButton) {
+        setStatus("已填写账号密码，但未找到唯一登录按钮", "warning");
+        return;
+      }
+      loginAttempted = true;
+      setStatus("已自动填写账号密码，正在登录");
+      loginButton.click();
+    }
   }
 
   function dismissKnownOnboarding() {
@@ -470,6 +551,14 @@
     panel.innerHTML = `
       <div class="chaoxing-qa-title">课程 QA</div>
       <div class="chaoxing-qa-status" data-qa-status>等待启动</div>
+      <div class="chaoxing-qa-credentials">
+        <input type="text" maxlength="30" autocomplete="off" data-qa-account placeholder="学习通账号">
+        <input type="password" maxlength="20" autocomplete="off" data-qa-password placeholder="学习通密码">
+        <div class="chaoxing-qa-credential-actions">
+          <button type="button" data-qa-save-credentials>保存账密</button>
+          <button type="button" data-qa-clear-credentials>清除</button>
+        </div>
+      </div>
       <label class="chaoxing-qa-option">
         <input type="checkbox" data-qa-auto-next checked>
         视频结束后进入下一节
@@ -490,6 +579,10 @@
     const stopButton = panel.querySelector("[data-qa-stop]");
     const autoNext = panel.querySelector("[data-qa-auto-next]");
     const videoOnly = panel.querySelector("[data-qa-video-only]");
+    const accountInput = panel.querySelector("[data-qa-account]");
+    const passwordInput = panel.querySelector("[data-qa-password]");
+    const saveCredentialsButton = panel.querySelector("[data-qa-save-credentials]");
+    const clearCredentialsButton = panel.querySelector("[data-qa-clear-credentials]");
 
     function syncRunButtons() {
       startButton.textContent = state.running ? "进行中..." : "开始";
@@ -525,6 +618,40 @@
       }
     });
 
+    saveCredentialsButton.addEventListener("click", async () => {
+      const account = accountInput.value.trim();
+      const password = passwordInput.value;
+      if (!account || !password) {
+        setStatus("请完整输入学习通账号和密码", "warning");
+        return;
+      }
+      const response = await send("save-credentials", { account, password });
+      if (!response.ok) {
+        setStatus("账号密码保存失败", "error");
+        return;
+      }
+      credentials = response.credentials;
+      credentialsLoaded = true;
+      loginAttempted = false;
+      passwordInput.value = credentials.password;
+      setStatus("账号密码已保存到本机");
+      autofillLoginIfNeeded();
+    });
+
+    clearCredentialsButton.addEventListener("click", async () => {
+      const response = await send("clear-credentials");
+      if (!response.ok) {
+        setStatus("账号密码清除失败", "error");
+        return;
+      }
+      credentials = response.credentials;
+      credentialsLoaded = true;
+      loginAttempted = false;
+      accountInput.value = "";
+      passwordInput.value = "";
+      setStatus("本机保存的账号密码已清除");
+    });
+
     async function saveOptions() {
       const response = await send("set-options", {
         autoNext: autoNext.checked,
@@ -553,8 +680,26 @@
           startButton.disabled = Boolean(state.running);
         }
         if (stopButton) stopButton.disabled = !state.running;
+        if (state.visibleErrorMessage) {
+          lastStatus = core.normalizeText(state.visibleErrorMessage);
+          updatePanelStatus(lastStatus, "error");
+        }
       }
     }
+  }
+
+  async function loadCredentials() {
+    const response = await send("get-credentials");
+    if (!response.ok) return;
+    credentials = response.credentials;
+    credentialsLoaded = true;
+    if (panel) {
+      const accountInput = panel.querySelector("[data-qa-account]");
+      const passwordInput = panel.querySelector("[data-qa-password]");
+      if (accountInput) accountInput.value = credentials.account;
+      if (passwordInput) passwordInput.value = credentials.password;
+    }
+    autofillLoginIfNeeded();
   }
 
   chrome.runtime.onMessage.addListener((message) => {
@@ -571,13 +716,12 @@
     });
   }
 
-  renderPanel();
-  refreshState();
-  tickTimer = window.setInterval(async () => {
+  async function tick() {
     if (tickBusy) return;
     tickBusy = true;
     try {
       await refreshState();
+      autofillLoginIfNeeded();
       dismissKnownOnboarding();
       await operateVideos();
       if (await confirmUnfinishedTaskSkip()) return;
@@ -588,7 +732,25 @@
     } finally {
       tickBusy = false;
     }
-  }, 1500);
+  }
+
+  async function initialize() {
+    renderPanel();
+    if (isTopFrame && pageWasReloaded()) {
+      const response = await send("page-reloaded", { pageFullscreen: pageIsFullscreen() });
+      if (response.ok) {
+        state = response.state;
+        if (response.wasRunning) {
+          setStatus("检测到刷新页面，请重新点击开始。", "error");
+        }
+      }
+    }
+    await refreshState();
+    if (isTopFrame) await loadCredentials();
+    tickTimer = window.setInterval(tick, 1500);
+  }
+
+  initialize();
 
   window.addEventListener("pagehide", () => {
     if (tickTimer) window.clearInterval(tickTimer);

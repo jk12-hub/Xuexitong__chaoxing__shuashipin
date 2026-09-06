@@ -2,11 +2,11 @@
 
 const SESSION_KEY = "chaoxingQaActiveTabsV1";
 const LOG_KEY = "chaoxingQaLogsV1";
+const CREDENTIALS_KEY = "chaoxingQaCredentialsV1";
 const MAX_LOGS_PER_TAB = 200;
-const NOTIFICATION_COOLDOWN_MS = 30000;
 const WATCHDOG_TIMEOUT_MS = 2 * 60 * 1000;
 const WATCHDOG_ALARM_NAME = "chaoxing-qa-watchdog";
-const NOTIFICATION_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl2EAAAAASUVORK5CYII=";
+const RELOAD_ERROR_MESSAGE = "检测到刷新页面，请重新点击开始。";
 
 async function getSessions() {
   const stored = await chrome.storage.session.get(SESSION_KEY);
@@ -32,9 +32,9 @@ async function getTabState(tabId) {
     watchdogTimedOut: false,
     lastDirectNavigationAt: 0,
     navigationPhase: "scanning",
-    pendingSystemError: false,
+    visibleErrorMessage: "",
+    pendingVisibleErrorMessage: "",
     pageFullscreen: false,
-    lastSystemErrorAt: 0,
     updatedAt: Date.now()
   };
 }
@@ -55,9 +55,9 @@ async function updateTabState(tabId, patch) {
     watchdogTimedOut: false,
     lastDirectNavigationAt: 0,
     navigationPhase: "scanning",
-    pendingSystemError: false,
+    visibleErrorMessage: "",
+    pendingVisibleErrorMessage: "",
     pageFullscreen: false,
-    lastSystemErrorAt: 0,
     ...(sessions[key] || {}),
     ...patch,
     updatedAt: Date.now()
@@ -76,29 +76,13 @@ async function isWindowFullscreen(windowId) {
   }
 }
 
-async function showSystemError(tabId) {
+async function revealPendingVisibleError(tabId, windowId) {
   const state = await getTabState(tabId);
-  const now = Date.now();
-  if (now - Number(state.lastSystemErrorAt || 0) < NOTIFICATION_COOLDOWN_MS) return false;
-  await chrome.notifications.create(`chaoxing-qa-error-${tabId}-${now}`, {
-    type: "basic",
-    iconUrl: NOTIFICATION_ICON_DATA_URL,
-    title: "自动播放视频错误",
-    message: "自动播放视频错误",
-    priority: 2,
-    requireInteraction: true
-  });
+  if (!state.pendingVisibleErrorMessage || state.pageFullscreen || await isWindowFullscreen(windowId)) return;
   await updateTabState(tabId, {
-    pendingSystemError: false,
-    lastSystemErrorAt: now
+    visibleErrorMessage: state.pendingVisibleErrorMessage,
+    pendingVisibleErrorMessage: ""
   });
-  return true;
-}
-
-async function flushPendingSystemError(tabId, windowId) {
-  const state = await getTabState(tabId);
-  if (!state.pendingSystemError || state.pageFullscreen || await isWindowFullscreen(windowId)) return;
-  await showSystemError(tabId);
 }
 
 async function appendLog(tabId, entry) {
@@ -112,6 +96,63 @@ async function appendLog(tabId, entry) {
   });
   logsByTab[key] = logs.slice(-MAX_LOGS_PER_TAB);
   await chrome.storage.local.set({ [LOG_KEY]: logsByTab });
+}
+
+async function getCredentials() {
+  const stored = await chrome.storage.local.get(CREDENTIALS_KEY);
+  const credentials = stored[CREDENTIALS_KEY] || {};
+  return {
+    account: String(credentials.account || ""),
+    password: String(credentials.password || "")
+  };
+}
+
+async function saveCredentials(accountValue, passwordValue) {
+  const credentials = {
+    account: String(accountValue || "").trim().slice(0, 30),
+    password: String(passwordValue || "").slice(0, 20)
+  };
+  await chrome.storage.local.set({ [CREDENTIALS_KEY]: credentials });
+  return credentials;
+}
+
+async function handlePageReload(tabId, frameUrl, windowId, pageFullscreen = false) {
+  const state = await getTabState(tabId);
+  if (!state.running) {
+    return { wasRunning: false, deferred: false, state };
+  }
+
+  let resolvedWindowId = windowId;
+  if (!resolvedWindowId) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      resolvedWindowId = tab.windowId;
+    } catch (_error) {
+      resolvedWindowId = 0;
+    }
+  }
+
+  const fullscreen = Boolean(pageFullscreen) || await isWindowFullscreen(resolvedWindowId);
+  await updateTabState(tabId, {
+    running: false,
+    startedAt: null,
+    lastProgressAt: 0,
+    watchdogTimedOut: false,
+    pendingNextClicks: 0,
+    nextEligibleAt: 0,
+    advanceStartedAt: 0,
+    lastDirectNavigationAt: 0,
+    navigationPhase: "scanning",
+    visibleErrorMessage: fullscreen ? "" : RELOAD_ERROR_MESSAGE,
+    pendingVisibleErrorMessage: fullscreen ? RELOAD_ERROR_MESSAGE : "",
+    pageFullscreen: Boolean(pageFullscreen)
+  });
+  await appendLog(tabId, {
+    level: "error",
+    frameUrl,
+    message: RELOAD_ERROR_MESSAGE
+  });
+  return { wasRunning: true, deferred: fullscreen, state: await getTabState(tabId) };
 }
 
 async function checkWatchdogTimeouts() {
@@ -139,10 +180,13 @@ async function checkWatchdogTimeouts() {
     }
 
     if (state.pageFullscreen || windowFullscreen) {
-      await updateTabState(tabId, { pendingSystemError: true });
+      await updateTabState(tabId, {
+        pendingVisibleErrorMessage: "连续2分钟未检测到页面进展或视频播放进度"
+      });
     } else {
-      const shown = await showSystemError(tabId);
-      if (!shown) await updateTabState(tabId, { watchdogTimedOut: false });
+      await updateTabState(tabId, {
+        visibleErrorMessage: "连续2分钟未检测到页面进展或视频播放进度"
+      });
     }
   }
 }
@@ -158,6 +202,18 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 ensureWatchdogAlarm();
 
+chrome.webNavigation.onCommitted.addListener((details) => {
+  if (details.frameId !== 0 || details.transitionType !== "reload") return;
+  let hostname = "";
+  try {
+    hostname = new URL(details.url).hostname;
+  } catch (_error) {
+    return;
+  }
+  if (hostname !== "chaoxing.com" && !hostname.endsWith(".chaoxing.com")) return;
+  return handlePageReload(details.tabId, details.url).catch(() => {});
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab && sender.tab.id;
   if (!tabId || !message || message.source !== "chaoxing-course-qa") {
@@ -167,6 +223,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === "get-state") {
       sendResponse({ ok: true, state: await getTabState(tabId) });
+      return;
+    }
+
+    if (message.type === "get-credentials") {
+      sendResponse({ ok: true, credentials: await getCredentials() });
+      return;
+    }
+
+    if (message.type === "save-credentials") {
+      const credentials = await saveCredentials(message.account, message.password);
+      sendResponse({ ok: true, credentials });
+      return;
+    }
+
+    if (message.type === "clear-credentials") {
+      const credentials = await saveCredentials("", "");
+      sendResponse({ ok: true, credentials });
+      return;
+    }
+
+    if (message.type === "page-reloaded") {
+      const result = await handlePageReload(
+        tabId,
+        sender.url,
+        sender.tab.windowId,
+        Boolean(message.pageFullscreen)
+      );
+      sendResponse({ ok: true, ...result });
       return;
     }
 
@@ -184,7 +268,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         advanceStartedAt: 0,
         lastDirectNavigationAt: 0,
         navigationPhase: "scanning",
-        pendingSystemError: false
+        visibleErrorMessage: "",
+        pendingVisibleErrorMessage: ""
       });
       await appendLog(tabId, {
         level: "info",
@@ -425,17 +510,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "report-playback-error") {
       const fullscreen = Boolean(message.pageFullscreen) || await isWindowFullscreen(sender.tab.windowId);
+      const reason = String(message.reason || "自动播放视频错误");
       await appendLog(tabId, {
         level: "error",
         frameUrl: sender.url,
-        message: String(message.reason || "自动播放视频错误")
+        message: reason
       });
       if (fullscreen) {
-        const state = await updateTabState(tabId, { pendingSystemError: true });
+        const state = await updateTabState(tabId, {
+          pendingVisibleErrorMessage: reason
+        });
         sendResponse({ ok: true, deferred: true, state });
       } else {
-        await showSystemError(tabId);
-        sendResponse({ ok: true, deferred: false, state: await getTabState(tabId) });
+        const state = await updateTabState(tabId, { visibleErrorMessage: reason });
+        sendResponse({ ok: true, deferred: false, state });
       }
       return;
     }
@@ -443,7 +531,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "fullscreen-state") {
       await updateTabState(tabId, { pageFullscreen: Boolean(message.pageFullscreen) });
       if (!message.pageFullscreen) {
-        await flushPendingSystemError(tabId, sender.tab.windowId);
+        await revealPendingVisibleError(tabId, sender.tab.windowId);
       }
       sendResponse({ ok: true });
       return;
@@ -468,7 +556,7 @@ chrome.windows.onBoundsChanged.addListener(async (browserWindow) => {
   try {
     const tabs = await chrome.tabs.query({ windowId: browserWindow.id });
     for (const tab of tabs) {
-      if (tab.id) await flushPendingSystemError(tab.id, browserWindow.id);
+      if (tab.id) await revealPendingVisibleError(tab.id, browserWindow.id);
     }
   } catch (_error) {
     // A closing browser window can disappear before the query completes.
