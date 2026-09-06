@@ -3,6 +3,7 @@
 const SESSION_KEY = "chaoxingQaActiveTabsV1";
 const LOG_KEY = "chaoxingQaLogsV1";
 const CREDENTIALS_KEY = "chaoxingQaCredentialsV1";
+const PANEL_POSITION_KEY = "chaoxingQaPanelPositionV1";
 const MAX_LOGS_PER_TAB = 200;
 const WATCHDOG_TIMEOUT_MS = 2 * 60 * 1000;
 const WATCHDOG_ALARM_NAME = "chaoxing-qa-watchdog";
@@ -114,6 +115,22 @@ async function saveCredentials(accountValue, passwordValue) {
   };
   await chrome.storage.local.set({ [CREDENTIALS_KEY]: credentials });
   return credentials;
+}
+
+async function getPanelPosition() {
+  const stored = await chrome.storage.local.get(PANEL_POSITION_KEY);
+  const position = stored[PANEL_POSITION_KEY];
+  if (!position || !Number.isFinite(position.left) || !Number.isFinite(position.top)) return null;
+  return { left: position.left, top: position.top };
+}
+
+async function savePanelPosition(leftValue, topValue) {
+  const position = {
+    left: Math.max(0, Number(leftValue) || 0),
+    top: Math.max(0, Number(topValue) || 0)
+  };
+  await chrome.storage.local.set({ [PANEL_POSITION_KEY]: position });
+  return position;
 }
 
 async function handlePageReload(tabId, frameUrl, windowId, pageFullscreen = false) {
@@ -240,6 +257,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "clear-credentials") {
       const credentials = await saveCredentials("", "");
       sendResponse({ ok: true, credentials });
+      return;
+    }
+
+    if (message.type === "get-panel-position") {
+      sendResponse({ ok: true, position: await getPanelPosition() });
+      return;
+    }
+
+    if (message.type === "save-panel-position") {
+      const position = await savePanelPosition(message.left, message.top);
+      sendResponse({ ok: true, position });
       return;
     }
 

@@ -18,6 +18,13 @@
   margin-bottom: 8px;
   font-size: 15px;
   font-weight: 700;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+#chaoxing-qa-panel .chaoxing-qa-title[data-dragging="true"] {
+  cursor: grabbing;
 }
 
 #chaoxing-qa-panel .chaoxing-qa-status {

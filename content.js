@@ -134,6 +134,68 @@
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  function clampPanelPosition(leftValue, topValue) {
+    if (!panel) return { left: 0, top: 0 };
+    const maxLeft = Math.max(0, window.innerWidth - panel.offsetWidth);
+    const maxTop = Math.max(0, window.innerHeight - panel.offsetHeight);
+    return {
+      left: Math.min(maxLeft, Math.max(0, Number(leftValue) || 0)),
+      top: Math.min(maxTop, Math.max(0, Number(topValue) || 0))
+    };
+  }
+
+  function applyPanelPosition(leftValue, topValue) {
+    if (!panel) return null;
+    const position = clampPanelPosition(leftValue, topValue);
+    panel.style.left = `${position.left}px`;
+    panel.style.top = `${position.top}px`;
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+    return position;
+  }
+
+  function enablePanelDragging() {
+    if (!panel) return;
+    const handle = panel.querySelector("[data-qa-drag-handle]");
+    if (!handle) return;
+    let drag = null;
+
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      const rect = panel.getBoundingClientRect();
+      drag = {
+        pointerId: event.pointerId,
+        offsetX: event.clientX - rect.left,
+        offsetY: event.clientY - rect.top
+      };
+      handle.setPointerCapture(event.pointerId);
+      handle.dataset.dragging = "true";
+      event.preventDefault();
+    });
+
+    handle.addEventListener("pointermove", (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      applyPanelPosition(event.clientX - drag.offsetX, event.clientY - drag.offsetY);
+    });
+
+    async function finishDrag(event) {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const position = applyPanelPosition(event.clientX - drag.offsetX, event.clientY - drag.offsetY);
+      drag = null;
+      delete handle.dataset.dragging;
+      if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+      if (position) await send("save-panel-position", position);
+    }
+
+    handle.addEventListener("pointerup", finishDrag);
+    handle.addEventListener("pointercancel", finishDrag);
+    window.addEventListener("resize", () => {
+      if (!panel.style.left || !panel.style.top) return;
+      const rect = panel.getBoundingClientRect();
+      applyPanelPosition(rect.left, rect.top);
+    });
+  }
+
   function findLoginSafetyGate() {
     const selectors = [
       "input[placeholder*='验证码']",
@@ -549,7 +611,7 @@
     panel = document.createElement("section");
     panel.id = "chaoxing-qa-panel";
     panel.innerHTML = `
-      <div class="chaoxing-qa-title">课程 QA</div>
+      <div class="chaoxing-qa-title" data-qa-drag-handle title="按住拖动面板">课程 QA</div>
       <div class="chaoxing-qa-status" data-qa-status>等待启动</div>
       <div class="chaoxing-qa-credentials">
         <input type="text" maxlength="30" autocomplete="off" data-qa-account placeholder="学习通账号">
@@ -574,6 +636,7 @@
       <div class="chaoxing-qa-note">仅正常播放；不答题、不跳时长、不绕过验证</div>
     `;
     document.documentElement.appendChild(panel);
+    enablePanelDragging();
 
     const startButton = panel.querySelector("[data-qa-start]");
     const stopButton = panel.querySelector("[data-qa-stop]");
@@ -702,6 +765,12 @@
     autofillLoginIfNeeded();
   }
 
+  async function loadPanelPosition() {
+    const response = await send("get-panel-position");
+    if (!response.ok || !response.position) return;
+    applyPanelPosition(response.position.left, response.position.top);
+  }
+
   chrome.runtime.onMessage.addListener((message) => {
     if (!message || message.source !== "chaoxing-course-qa") return;
     if (message.type === "video-ended") goToNextSection(Number(message.at) || Date.now());
@@ -736,6 +805,7 @@
 
   async function initialize() {
     renderPanel();
+    if (isTopFrame) await loadPanelPosition();
     if (isTopFrame && pageWasReloaded()) {
       const response = await send("page-reloaded", { pageFullscreen: pageIsFullscreen() });
       if (response.ok) {

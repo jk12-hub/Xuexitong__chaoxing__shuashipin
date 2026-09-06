@@ -97,6 +97,13 @@ function send(message) {
   assert.equal(loaded.credentials.account, saved.credentials.account);
   assert.equal(loaded.credentials.password, saved.credentials.password);
 
+  const savedPosition = await send({ type: "save-panel-position", left: 320, top: 180 });
+  assert.equal(savedPosition.position.left, 320);
+  assert.equal(savedPosition.position.top, 180);
+  const loadedPosition = await send({ type: "get-panel-position" });
+  assert.equal(loadedPosition.position.left, 320);
+  assert.equal(loadedPosition.position.top, 180);
+
   await send({ type: "set-running", running: true, autoNext: true, videoOnlyMode: true });
   const immediate = await send({ type: "page-reloaded", pageFullscreen: false });
   assert.equal(immediate.ok, true);
